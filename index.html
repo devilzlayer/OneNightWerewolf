@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>One Night Werewolf</title>
+    <style>
+        /* Sets a solid brown background color for the game */
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: sans-serif;
+            background-color: #8B5A2B; /* Classic board-game brown */
+            color: #2c3e50;
+        }
+
+        /* Semi-transparent panels so text pops cleanly over the brown background */
+        #setup, #gameArea {
+            background: rgba(255, 255, 255, 0.92);
+            padding: 25px;
+            border-radius: 12px;
+            max-width: 650px;
+            margin: 20px auto;
+            box-shadow: 0 6px 15px rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.6);
+        }
+
+        /* Base image adjustments for final/center role cards */
+        .role-card-img {
+            display: block;
+            width: 120px;
+            height: 160px;
+            object-fit: cover;
+            border-radius: 8px;
+            margin: 10px auto;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        
+        /* Floating HUD element locked permanently to the lower-left corner */
+        #fixedRoleHUD {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 12px;
+            border-radius: 12px;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+            border: 2px solid #2c3e50;
+            z-index: 9999;
+            display: none; /* Controlled dynamically via updateUI */
+            width: 110px;
+            text-align: center;
+        }
+        #fixedRoleHUD strong {
+            font-size: 14px;
+            display: block;
+            margin-bottom: 2px;
+        }
+        #fixedRoleHUD small {
+            font-size: 11px;
+            color: #555;
+            font-weight: bold;
+        }
+
+        /* UI elements layout styles */
+        button {
+            padding: 10px 15px;
+            margin: 5px;
+            border: none;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        button:active {
+            transform: scale(0.96);
+        }
+        .night-btn {
+            display: block;
+            margin: 8px auto;
+            background-color: #2c3e50;
+            color: white;
+            width: 80%;
+        }
+        input[type="text"] {
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            margin-right: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="setup">
+        <h2>🐺 One Night Werewolf</h2>
+        <input type="text" id="playerName" placeholder="Enter Name">
+        <input type="text" id="gameCode" placeholder="Game Code">
+        <br><br>
+        <button style="background-color: #34495e; color: white;" onclick="createGame()">Create Game</button>
+        <button style="background-color: #27ae60; color: white;" onclick="joinGame()">Join Game</button>
+    </div>
+
+    <div id="gameArea" style="display:none;">
+        <h3 id="displayCode"></h3>
+        
+        <button id="startButton" style="display:none; background-color: #e74c3c; color: white; font-size: 16px;" onclick="startGame()">Start Game</button>
+        
+        <div id="playerList">
+            <h4>Players in Lobby:</h4>
+            <ul id="playersUl" style="list-style-type: '👤 '; padding-left: 20px;"></ul>
+        </div>
+        
+        <hr style="border: 0; height: 1px; background: #ccc; margin: 20px 0;">
+        <div id="statusArea"></div> 
+        <div id="actionArea" style="margin-top: 15px;"></div> 
+    </div>
+
+    <div id="fixedRoleHUD"></div>
+
+    <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.0.0/firebase-database-compat.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
