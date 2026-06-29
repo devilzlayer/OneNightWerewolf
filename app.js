@@ -43,6 +43,9 @@ function createGame() {
         players: { [myName]: { alive: true, originalRole: "Unassigned", currentRole: "Unassigned" } },
         phase: "lobby"
     });
+
+    // Auto-remove game from Firebase if host disconnects (closes tab, loses connection, etc.)
+    db.ref('games/' + code).onDisconnect().remove();
     showGame(code);
 }
 
@@ -81,6 +84,19 @@ function showGame(code) {
         document.getElementById("startButton").style.display = "inline-block";
     }
 
+    // Add Quit Game button (visible to host only, but shows for all so host can close)
+    let quitBtn = document.getElementById("quitButton");
+    if (!quitBtn) {
+        quitBtn = document.createElement("button");
+        quitBtn.id = "quitButton";
+        quitBtn.innerText = "🚪 Quit Game";
+        quitBtn.style.backgroundColor = "#95a5a6";
+        quitBtn.style.color = "white";
+        quitBtn.style.float = "right";
+        quitBtn.onclick = cleanupGame;
+        document.getElementById("displayCode").appendChild(quitBtn);
+    }
+
     db.ref('games/' + code).on('value', (snapshot) => {
         const game = snapshot.val();
         if (game) updateUI(game);
@@ -116,6 +132,11 @@ function checkWinCondition(game) {
     db.ref(`games/${currentGameCode}/phase`).set("gameover");
     db.ref(`games/${currentGameCode}/winner`).set(winner);
     db.ref(`games/${currentGameCode}/exiledPlayer`).set(exiled);
+
+    // Auto-remove game data 60 seconds after gameover
+    setTimeout(() => {
+        db.ref('games/' + currentGameCode).remove();
+    }, 60000);
 }
 
 function updateUI(game) {
@@ -179,6 +200,9 @@ function updateUI(game) {
         }
         
         endingHtml += `</div>`;
+        if (isHost) {
+            endingHtml += `<br><button onclick="cleanupGame()" style="background-color: #e74c3c; color: white; font-size: 16px; padding: 10px 25px;">🗑️ Close Game & Remove Room</button>`;
+        }
         status.innerHTML = endingHtml;
         return; 
     }
@@ -353,6 +377,21 @@ function updateUI(game) {
 
 function completeNightAction() {
     db.ref(`games/${currentGameCode}/readyPlayers/${myName}`).set(true);
+}
+
+// Clean up game data from Firebase and reset UI
+function cleanupGame() {
+    if (!currentGameCode) return;
+    if (isHost) {
+        db.ref('games/' + currentGameCode).remove();
+    }
+    document.getElementById("gameArea").style.display = "none";
+    document.getElementById("setup").style.display = "block";
+    currentGameCode = "";
+    myName = "";
+    isHost = false;
+    tmFirstSelection = "";
+    seerFirstCenterSelection = "";
 }
 
 function startGame() {
