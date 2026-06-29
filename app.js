@@ -21,12 +21,12 @@ let seerFirstCenterSelection = "";
 
 // Image Asset Mapping using your local folder path references with fast loading .webp files
 const ROLE_IMAGES = {
-    "Werewolf": "https://cf.geekdo-images.com/imagepage/img/tgyrEJ3RbB_sZlme9eHu-ZKQ-vo=/fit-in/900x600/filters:no_upscale()/pic4462616.png",
-    "Seer": "https://cf.geekdo-images.com/imagepage/img/Y5Kj8KnsVPX9uJBn2mRw64WUzY4=/fit-in/900x600/filters:no_upscale()/pic4462604.png",
-    "Robber": "https://cf.geekdo-images.com/imagepage/img/rv16CisR0fsy8pkEOAAZkGwTsFk=/fit-in/900x600/filters:no_upscale()/pic4462602.png",
-    "Troublemaker": "https://cf.geekdo-images.com/imagepage/img/2gB7ClAu4p7rrs8ipGnNAfOOO-w=/fit-in/900x600/filters:no_upscale()/pic4462611.png",
-    "Villager": "https://cf.geekdo-images.com/imagepage/img/PsaeiAGo4yVQQGhE-7995uZDCc8=/fit-in/900x600/filters:no_upscale()/pic4462615.png",
-    "Unassigned": "images/card-back.webp" 
+    "Werewolf": "images/Werewolf.webp",
+    "Seer": "images/Seer.webp",
+    "Robber": "images/Robber.webp",
+    "Troublemaker": "images/Troublemaker.webp",
+    "Villager": "images/Villager.webp",
+    "Unassigned": "images/Unassigned.webp" 
 };
 
 // Create Game Room Handler
