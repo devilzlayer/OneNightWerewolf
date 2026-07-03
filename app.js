@@ -78,26 +78,6 @@ function playGameOverFanfare() {
 function playVoteSound() { playTone(600, 0.15, "triangle", 0.08); }
 function playCardFlipSound() { playTone(300, 0.1, "square", 0.06); setTimeout(() => playTone(500, 0.1, "square", 0.06), 100); }
 
-// ===== TEXT TO SPEECH =====
-let ttsEnabled = true;
-let ttsVoices = [];
-function initTTS() {
-    ttsVoices = window.speechSynthesis.getVoices();
-    if (ttsVoices.length === 0) {
-        window.speechSynthesis.onvoiceschanged = () => { ttsVoices = window.speechSynthesis.getVoices(); };
-    }
-}
-initTTS();
-function speak(text) {
-    if (!ttsEnabled || !text || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.8; utterance.pitch = 0.2; utterance.volume = 1;
-    const deepVoice = ttsVoices.find(v => v.name.includes("Alex") || v.name.includes("Fred") || v.name.includes("Bruce") || v.name.includes("Male") || v.name.includes("Daniel"));
-    if (deepVoice) utterance.voice = deepVoice;
-    try { window.speechSynthesis.speak(utterance); } catch(e) {}
-}
-
 // ===== DARK MODE =====
 function toggleDarkMode() {
     document.body.classList.toggle("dark-mode");
@@ -374,7 +354,6 @@ function updateUI(game) {
     if (game.phase === "gameover") {
         if (lastSpokenPhase !== "gameover" && game.winner) {
             lastSpokenPhase = "gameover";
-            speak(`Game Over! Victory for the ${game.winner}`);
             playGameOverFanfare();
         }
         let html = `<h2 class="fade-in">Game Over! Victory for <span style="color:#d9534f;">${game.winner}</span>!</h2>`;
@@ -421,7 +400,7 @@ function updateUI(game) {
 
     // ===== LOBBY =====
     if (game.phase === "lobby") {
-        if (lastSpokenPhase !== "lobby") { lastSpokenPhase = "lobby"; speak("Waiting in the lobby for the host to start the game."); }
+        if (lastSpokenPhase !== "lobby") { lastSpokenPhase = "lobby"; }
         status.innerText = "Waiting in the lobby for the host to start the game...";
         document.getElementById("chatBox").style.display = "none";
         document.getElementById("nightReplay").style.display = "none";
@@ -430,7 +409,7 @@ function updateUI(game) {
 
     // ===== DAY =====
     else if (game.phase === "day") {
-        if (lastSpokenPhase !== "day") { lastSpokenPhase = "day"; speak("It is Day. Cast your ballot!"); playDayBell(); }
+        if (lastSpokenPhase !== "day") { lastSpokenPhase = "day"; playDayBell(); }
         document.getElementById("chatBox").style.display = "block";
         if (game.chat) {
             const chatDiv = document.getElementById("chatMessages");
@@ -473,7 +452,7 @@ function updateUI(game) {
 
     // ===== NIGHT =====
     else if (game.phase === "night") {
-        if (lastSpokenPhase !== "night") { lastSpokenPhase = "night"; speak("Night Phase. Close your eyes."); playNightAmbiance(); }
+        if (lastSpokenPhase !== "night") { lastSpokenPhase = "night"; playNightAmbiance(); }
         document.getElementById("chatBox").style.display = "none";
         const myOrig = game.players?.[myName]?.originalRole || "Unassigned";
         const hasDone = game.readyPlayers && game.readyPlayers[myName];
@@ -637,7 +616,6 @@ function startGame() {
             return alert("Need at least 3 players!");
         }
 
-        speak("The game is starting! Close your eyes.");
         playClick();
         // Play wolf howl sound effect and wait for it to finish
         try {
