@@ -20,6 +20,19 @@ let gameStarted = false;
 let lastSpokenPhase = "";
 let tmFirstSelection = "";
 let seerFirstCenterSelection = "";
+let cachedNightRole = "";
+
+// ===== SESSION PERSISTENCE (for reconnection on refresh) =====
+function saveSession() {
+    localStorage.setItem("onw_gameCode", currentGameCode);
+    localStorage.setItem("onw_playerName", myName);
+    localStorage.setItem("onw_isHost", isHost ? "true" : "");
+}
+function clearSession() {
+    localStorage.removeItem("onw_gameCode");
+    localStorage.removeItem("onw_playerName");
+    localStorage.removeItem("onw_isHost");
+}
 
 // Image Asset Mapping
 const ROLE_IMAGES = {
@@ -29,6 +42,58 @@ const ROLE_IMAGES = {
     "Insomniac": "images/Insomniac.webp",
     "Unassigned": "images/Unassigned.webp"
 };
+
+// Role Information for the card click popup
+const ROLE_INFO = {
+    "Werewolf": "🐺 You are a Werewolf! At night, see who your fellow wolves are. Your goal is to not get voted out during the day. If one or more werewolf is exiled out you lose, you win if all werewolves are alive",
+    "Seer": "🔮 You are the Seer! At night, you may look at another player's current role card or two of the center cards. Use this information to guide the village — or mislead them.",
+    "Robber": "🕵️ You are the Robber! At night, you may swap your card with another player's card and look at it. You then become that role. Act accordingly!",
+    "Troublemaker": "⚡ You are the Troublemaker! At night, you may swap the cards of two other players. You do not get to look at either card — chaos is the goal.",
+    "Villager": "🌾 You are a Villager! You have no night action. Your goal is to use the day discussion to figure out who the Werewolves are and vote them out.",
+    "Tanner": "🧑‍🌾 You are the Tanner! You have no night action. Your goal is to be voted out during the day. Make the village suspect you!",
+    "Insomniac": "🌙 You are the Insomniac! At the end of the night, you may look at your own current role card to see if it was swapped during the night.",
+    "Unassigned": "❓ Role not yet assigned. Wait for the game to start."
+};
+
+function showRoleInfo(role) {
+    const info = ROLE_INFO[role] || "Unknown role.";
+    const modal = document.getElementById("roleInfoModal");
+    const overlay = document.getElementById("roleInfoOverlay");
+    document.getElementById("roleInfoTitle").innerText = role;
+    document.getElementById("roleInfoText").innerText = info;
+    document.getElementById("roleInfoImage").src = ROLE_IMAGES[role] || "";
+    modal.style.display = "block";
+    overlay.style.display = "block";
+}
+
+function closeRoleInfo() {
+    document.getElementById("roleInfoModal").style.display = "none";
+    document.getElementById("roleInfoOverlay").style.display = "none";
+}
+
+function showRoleGallery() {
+    const overlay = document.getElementById("roleGalleryOverlay");
+    const panel = document.getElementById("roleGalleryPanel");
+    const grid = document.getElementById("roleGalleryGrid");
+    if (!panel || !grid) return;
+
+    // All playable roles (exclude Unassigned)
+    const roles = ["Werewolf","Seer","Robber","Troublemaker","Villager","Tanner","Insomniac"];
+    grid.innerHTML = roles.map(role => `
+        <div class="gallery-card" onclick="showRoleInfo('${role}')">
+            <img src="${ROLE_IMAGES[role]}" alt="${role}">
+            <span>${role}</span>
+        </div>
+    `).join("");
+
+    panel.style.display = "block";
+    overlay.style.display = "block";
+}
+
+function closeRoleGallery() {
+    document.getElementById("roleGalleryPanel").style.display = "none";
+    document.getElementById("roleGalleryOverlay").style.display = "none";
+}
 
 // ===== SOUND SYSTEM (Web Audio API - no files needed) =====
 let soundEnabled = true;
@@ -103,8 +168,11 @@ function createGame() {
         chat: {},
         nightLog: {}
     });
-    db.ref('games/' + code).onDisconnect().remove();
+    // Don't delete the whole game on disconnect — just remove the host player
+    // so the host can reconnect on refresh
+    db.ref('games/' + code + '/players/' + myName).onDisconnect().remove();
     showGame(code);
+    saveSession();
 }
 
 // ===== JOIN GAME =====
@@ -123,6 +191,7 @@ function joinGame() {
         currentGameCode = code;
         db.ref(`games/${code}/players/${myName}`).set({ alive: true, originalRole: "Unassigned", currentRole: "Unassigned" });
         showGame(code);
+        saveSession();
     });
 }
 
@@ -159,7 +228,7 @@ function sendChat() {
 }
 
 // ===== WIN CONDITION =====
-function checkWinCondition(game) {
+async function checkWinCondition(game) {
     const players = game.players || {};
     const votes = game.votes || {};
 
@@ -185,19 +254,20 @@ function checkWinCondition(game) {
         }
     }
 
-    db.ref(`games/${currentGameCode}`).update({ phase: "gameover", winner: winner, exiledPlayer: exiled });
+    // Record stats FIRST — wait for all transactions to complete
+    await recordStats(game, winner, exiled);
 
-    // Record stats
-    recordStats(game, winner, exiled);
+    // Then update the phase (triggers updateUI → showStats with fresh data)
+    db.ref(`games/${currentGameCode}`).update({ phase: "gameover", winner: winner, exiledPlayer: exiled });
 
     // Build night replay log
     buildNightReplay();
 }
 
 // ===== STATISTICS & ACHIEVEMENTS =====
-function recordStats(game, winner, exiled) {
+async function recordStats(game, winner, exiled) {
     const players = game.players || {};
-    Object.keys(players).forEach(p => {
+    const promises = Object.keys(players).map(p => {
         const role = players[p].currentRole;
         const isWinningTeam = (
             (winner === "Werewolves" && role === "Werewolf") ||
@@ -205,7 +275,7 @@ function recordStats(game, winner, exiled) {
             (winner === "Tanner" && role === "Tanner")
         );
         const statsRef = db.ref(`stats/${p.replace(/[.#$\/\[\]]/g, '_')}`);
-        statsRef.transaction(current => {
+        return statsRef.transaction(current => {
             if (!current) current = { games: 0, wins: 0, losses: 0, roles: {}, achievements: {} };
             current.games = (current.games || 0) + 1;
             if (isWinningTeam) current.wins = (current.wins || 0) + 1;
@@ -222,6 +292,7 @@ function recordStats(game, winner, exiled) {
             return current;
         });
     });
+    await Promise.all(promises);
 }
 
 function getAchievementBadges(achievements) {
@@ -337,6 +408,8 @@ function updateUI(game) {
     const actions = document.getElementById("actionArea");
     const fixedHUD = document.getElementById("fixedRoleHUD");
     actions.innerHTML = "";
+    // Clear cached night role when leaving night phase
+    if (game.phase !== "night") cachedNightRole = "";
     if (game.phase !== "lobby") document.getElementById("startButton").style.display = "none";
 
     // HUD
@@ -345,8 +418,8 @@ function updateUI(game) {
         fixedHUD.innerHTML = `<span style="font-size:11px;color:#7f8c8d;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${myName}</span>
             <hr style="margin:4px 0;border:0;border-top:1px solid #eee;">
             <strong>Your Card:</strong>
-            <img src="${ROLE_IMAGES[myOrig]}" class="role-card-img card-flip" style="width:90px;height:120px;" alt="${myOrig}">
-            <small>${myOrig}</small>`;
+            <img src="${ROLE_IMAGES[myOrig]}" class="role-card-img card-flip" style="width:140px;height:187px;cursor:pointer;" alt="${myOrig}" onclick="showRoleInfo('${myOrig}')">
+            <small style="cursor:pointer;" onclick="showRoleInfo('${myOrig}')">${myOrig} ℹ️</small>`;
         fixedHUD.style.display = "block";
     } else { fixedHUD.style.display = "none"; }
 
@@ -358,6 +431,20 @@ function updateUI(game) {
         }
         let html = `<h2 class="fade-in">Game Over! Victory for <span style="color:#d9534f;">${game.winner}</span>!</h2>`;
         html += `<p class="slide-up">Exiled: <strong>${game.exiledPlayer}</strong></p>`;
+
+        // List winning players
+        const allP = game.players || {};
+        let winnersList = [];
+        if (game.winner === "Werewolves") {
+            winnersList = Object.keys(allP).filter(p => allP[p].currentRole === "Werewolf");
+        } else if (game.winner === "Tanner") {
+            winnersList = Object.keys(allP).filter(p => allP[p].currentRole === "Tanner");
+        } else { // Villagers
+            winnersList = Object.keys(allP).filter(p => allP[p].currentRole !== "Werewolf" && allP[p].currentRole !== "Tanner");
+        }
+        if (winnersList.length > 0) {
+            html += `<p class="slide-up"><strong>🏆 Winners:</strong> ${winnersList.map(w => w === myName ? `<strong>${w} (You)</strong>` : w).join(", ")}</p>`;
+        }
 
         // Show vote results to everyone
         if (game.voteResults) {
@@ -401,10 +488,13 @@ function updateUI(game) {
     // ===== LOBBY =====
     if (game.phase === "lobby") {
         if (lastSpokenPhase !== "lobby") { lastSpokenPhase = "lobby"; }
-        status.innerText = "Waiting in the lobby for the host to start the game...";
         document.getElementById("chatBox").style.display = "none";
         document.getElementById("nightReplay").style.display = "none";
         if (isHost) document.getElementById("startButton").style.display = "inline-block";
+        // Show instructions + waiting text
+        const instructBtn = "<button onclick=\"toggleInstructions()\" style=\"background:#9b59b6;color:white;font-size:14px;padding:8px 20px;border-radius:6px;border:none;cursor:pointer;margin-bottom:10px;\">📖 How to Play</button>";
+        const rolesBtn = "<button onclick=\"showRoleGallery()\" style=\"background:#e67e22;color:white;font-size:14px;padding:8px 20px;border-radius:6px;border:none;cursor:pointer;margin-bottom:10px;margin-left:8px;\">🃏 Roles</button>";
+        status.innerHTML = `<div style="text-align:center;">${instructBtn}${rolesBtn}</div><p style="text-align:center;color:#7f8c8d;margin:0;">Waiting in the lobby for the host to start the game...</p>`;
     }
 
     // ===== DAY =====
@@ -454,7 +544,14 @@ function updateUI(game) {
     else if (game.phase === "night") {
         if (lastSpokenPhase !== "night") { lastSpokenPhase = "night"; playNightAmbiance(); }
         document.getElementById("chatBox").style.display = "none";
-        const myOrig = game.players?.[myName]?.originalRole || "Unassigned";
+
+        // Cache the role at first night render so subsequent DB updates (e.g. robberies)
+        // don't change what actions the player sees — victims shouldn't know they were robbed
+        if (!cachedNightRole) {
+            cachedNightRole = game.players?.[myName]?.currentRole || "Unassigned";
+        }
+        const nightRole = cachedNightRole;
+
         const hasDone = game.readyPlayers && game.readyPlayers[myName];
         let sHtml = `<div><strong>🌃 Night Phase</strong></div>`;
         status.innerHTML = sHtml;
@@ -465,18 +562,18 @@ function updateUI(game) {
             const p = game.players || {};
             const allPlayers = Object.keys(p);
 
-            if (myOrig === "Villager" || myOrig === "Tanner") {
-                if (myOrig === "Tanner") status.innerHTML += "<p>🧑‍🌾 Your goal: be voted out during the day!</p>";
+            if (nightRole === "Villager" || nightRole === "Tanner") {
+                if (nightRole === "Tanner") status.innerHTML += "<p>🧑‍🌾 Your goal: be voted out during the day!</p>";
                 addBtn("😴 Sleep", "night-btn swipe-btn", () => { playClick(); completeNightAction(); });
             }
-            else if (myOrig === "Werewolf") {
-                let allies = allPlayers.filter(x => x !== myName && p[x]?.originalRole === "Werewolf");
+            else if (nightRole === "Werewolf") {
+                let allies = allPlayers.filter(x => x !== myName && p[x]?.currentRole === "Werewolf");
                 status.innerHTML += allies.length
                     ? `<p>🐺 Fellow Wolves: <strong>${allies.map(a => ""+a).join(", ")}</strong></p>`
                     : "<p>🐺 You are a lone wolf.</p>";
                 addBtn("🐺 Acknowledge", "night-btn swipe-btn", () => { playClick(); completeNightAction(); });
             }
-            else if (myOrig === "Seer") {
+            else if (nightRole === "Seer") {
                 status.innerHTML += "<p>🔮 Inspect a player or 2 center cards:</p>";
                 allPlayers.forEach(n => {
                     if (n !== myName) addBtn(`🔍 ${n}`, "swipe-btn", () => {
@@ -493,7 +590,7 @@ function updateUI(game) {
                     });
                 });
             }
-            else if (myOrig === "Robber") {
+            else if (nightRole === "Robber") {
                 status.innerHTML += "<p>🕵️ Rob a player:</p>";
                 allPlayers.forEach(n => {
                     if (n !== myName) addBtn(`💰 ${n}`, "swipe-btn", () => {
@@ -503,7 +600,7 @@ function updateUI(game) {
                     });
                 });
             }
-            else if (myOrig === "Troublemaker") {
+            else if (nightRole === "Troublemaker") {
                 status.innerHTML += "<p>⚡ Swap 2 players' cards:</p>";
                 allPlayers.forEach(n => {
                     if (n !== myName) addBtn((tmFirstSelection===n?"✅ ":"")+" "+n, "swipe-btn", () => {
@@ -516,7 +613,7 @@ function updateUI(game) {
                     });
                 });
             }
-            else if (myOrig === "Insomniac") {
+            else if (nightRole === "Insomniac") {
                 status.innerHTML += "<p>🌙 Check your final card:</p>";
                 addBtn("👁️ Peek", "night-btn swipe-btn", () => {
                     const finalRole = game.players[myName].currentRole;
@@ -568,6 +665,7 @@ function cleanupGame() {
     document.getElementById("chatBox").style.display = "none";
     document.getElementById("nightReplay").style.display = "none";
     document.getElementById("statsPanel").style.display = "none";
+    clearSession();
     currentGameCode = ""; myName = ""; isHost = false; gameStarting = false; gameStarted = false;
     tmFirstSelection = ""; seerFirstCenterSelection = "";
 }
@@ -636,10 +734,12 @@ function proceedStartGame(players) {
     gameStarting = false;
     if (players.length < 3) return;
     let baseDeck = [
-        "Werewolf","Werewolf","Seer","Robber","Troublemaker",
+        "Werewolf","Werewolf",
+        "Seer","Robber","Troublemaker",
+        "Villager",
         "Tanner","Insomniac",
         "Villager","Villager","Villager","Villager","Villager",
-        "Villager","Villager","Villager","Villager"
+        "Villager","Villager","Villager"
     ];
     let deck = baseDeck.slice(0, players.length + 3);
     deck.sort(() => Math.random() - 0.5);
@@ -714,7 +814,65 @@ document.addEventListener('click', function initAudio() {
 // Try to start background music on page load (may be blocked by browser)
 startMusic("lobby");
 
+// ===== RECONNECT ON REFRESH =====
+async function tryReconnect() {
+    const savedCode = localStorage.getItem("onw_gameCode");
+    const savedName = localStorage.getItem("onw_playerName");
+    const savedHost = localStorage.getItem("onw_isHost");
+    if (!savedCode || !savedName) return;
+
+    const snapshot = await db.ref('games/' + savedCode).once('value');
+    if (!snapshot.exists()) {
+        clearSession();
+        console.log("🐺 Saved game room no longer exists — session cleared.");
+        return;
+    }
+    const game = snapshot.val();
+
+    // If the player was removed by a disconnect, re-add them
+    if (!game.players || !game.players[savedName]) {
+        isHost = savedHost === "true";
+        // Re-add the player with default data
+        const playerData = { alive: true, originalRole: "Unassigned", currentRole: "Unassigned" };
+        await db.ref(`games/${savedCode}/players/${savedName}`).set(playerData);
+        // If the original host disconnected, restore them as host
+        if (isHost && game.host !== savedName) {
+            await db.ref(`games/${savedCode}/host`).set(savedName);
+        }
+        console.log(`🐺 Re-added ${savedName} to game ${savedCode}`);
+    }
+
+    // Reconnect!
+    currentGameCode = savedCode;
+    myName = savedName;
+    isHost = savedHost === "true";
+    gameStarted = game.phase !== "lobby";
+
+    // Re-establish onDisconnect so the host can survive another refresh
+    if (isHost) {
+        db.ref(`games/${savedCode}/players/${savedName}`).onDisconnect().remove();
+    }
+
+    showGame(savedCode);
+    console.log(`🐺 Reconnected to game ${savedCode} as ${savedName}`);
+}
+
 // ===== MOBILE TOUCH SUPPORT =====
 document.addEventListener("touchstart", () => {}, { passive: true });
 
-console.log("🐺 One Night Werewolf — All features loaded!");
+tryReconnect();
+// ===== HOW TO PLAY =====
+function toggleInstructions() {
+    const panel = document.getElementById("instructionsPanel");
+    const overlay = document.getElementById("instructionsOverlay");
+    if (!panel) return;
+    const shown = panel.style.display === "block";
+    panel.style.display = shown ? "none" : "block";
+    overlay.style.display = shown ? "none" : "block";
+}
+function closeInstructions() {
+    const panel = document.getElementById("instructionsPanel");
+    const overlay = document.getElementById("instructionsOverlay");
+    if (panel) panel.style.display = "none";
+    if (overlay) overlay.style.display = "none";
+}
