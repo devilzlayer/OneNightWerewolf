@@ -21,6 +21,7 @@ let lastSpokenPhase = "";
 let tmFirstSelection = "";
 let seerFirstCenterSelection = "";
 let cachedNightRole = "";
+let nightTimerInterval = null;
 
 // ===== SESSION PERSISTENCE (for reconnection on refresh) =====
 function saveSession() {
@@ -42,6 +43,15 @@ const ROLE_IMAGES = {
     "Insomniac": "images/Insomniac.webp",
     "Unassigned": "images/Unassigned.webp"
 };
+
+// Night phase role order (sequential with timers)
+const NIGHT_ORDER = [
+    { phase: "werewolf",    roles: ["Werewolf"],    time: 30 },
+    { phase: "seer",        roles: ["Seer"],        time: 30 },
+    { phase: "robber",      roles: ["Robber"],      time: 30 },
+    { phase: "troublemaker", roles: ["Troublemaker"], time: 30 },
+    { phase: "insomniac",   roles: ["Insomniac"],   time: 15 }
+];
 
 // Role Information for the card click popup
 const ROLE_INFO = {
@@ -162,7 +172,7 @@ function createGame() {
 
     db.ref('games/' + code).set({
         host: myName,
-        players: { [myName]: { alive: true, originalRole: "Unassigned", currentRole: "Unassigned" } },
+        players: { [myName]: { alive: true, originalRole: "Unassigned", currentRole: "Unassigned", ready: false } },
 
         phase: "lobby",
         chat: {},
@@ -189,7 +199,7 @@ function joinGame() {
             return alert("This name is already taken in this lobby! Choose a different name.");
         }
         currentGameCode = code;
-        db.ref(`games/${code}/players/${myName}`).set({ alive: true, originalRole: "Unassigned", currentRole: "Unassigned" });
+        db.ref(`games/${code}/players/${myName}`).set({ alive: true, originalRole: "Unassigned", currentRole: "Unassigned", ready: false });
         showGame(code);
         saveSession();
     });
@@ -396,10 +406,17 @@ function updateUI(game) {
     // Player list
     const playersUl = document.getElementById("playersUl");
     playersUl.innerHTML = "";
+    const isLobby = game.phase === "lobby";
     Object.keys(game.players || {}).forEach(p => {
         let li = document.createElement("li");
-        const label = p === myName ? `<strong>${p} (You)</strong>` : ` ${p}`;
-        li.innerHTML = label;
+        const ready = game.players[p].ready;
+        const readyIcon = ready ? "✅" : "⏳";
+        const label = p === myName
+            ? `<strong>${p} (You)</strong>`
+            : ` ${p}`;
+        li.innerHTML = isLobby
+            ? `<span style="margin-right:6px;">${readyIcon}</span>${label}`
+            : label;
         li.style.animation = "fadeIn 0.3s ease";
         playersUl.appendChild(li);
     });
@@ -408,8 +425,14 @@ function updateUI(game) {
     const actions = document.getElementById("actionArea");
     const fixedHUD = document.getElementById("fixedRoleHUD");
     actions.innerHTML = "";
-    // Clear cached night role when leaving night phase
-    if (game.phase !== "night") cachedNightRole = "";
+    // Clear cached night role and timer when leaving night phase
+    if (game.phase !== "night") {
+        cachedNightRole = "";
+        if (nightTimerInterval) {
+            clearInterval(nightTimerInterval);
+            nightTimerInterval = null;
+        }
+    }
     if (game.phase !== "lobby") document.getElementById("startButton").style.display = "none";
 
     // HUD
@@ -491,10 +514,32 @@ function updateUI(game) {
         document.getElementById("chatBox").style.display = "none";
         document.getElementById("nightReplay").style.display = "none";
         if (isHost) document.getElementById("startButton").style.display = "inline-block";
-        // Show instructions + waiting text
+
+        // Ready count
+        const allPlayers = Object.keys(game.players || {});
+        const totalPlayers = allPlayers.length;
+        const readyCount = allPlayers.filter(p => game.players[p].ready).length;
+
         const instructBtn = "<button onclick=\"toggleInstructions()\" style=\"background:#9b59b6;color:white;font-size:14px;padding:8px 20px;border-radius:6px;border:none;cursor:pointer;margin-bottom:10px;\">📖 How to Play</button>";
         const rolesBtn = "<button onclick=\"showRoleGallery()\" style=\"background:#e67e22;color:white;font-size:14px;padding:8px 20px;border-radius:6px;border:none;cursor:pointer;margin-bottom:10px;margin-left:8px;\">🃏 Roles</button>";
-        status.innerHTML = `<div style="text-align:center;">${instructBtn}${rolesBtn}</div><p style="text-align:center;color:#7f8c8d;margin:0;">Waiting in the lobby for the host to start the game...</p>`;
+
+        const amReady = game.players?.[myName]?.ready || false;
+        const readyBtn = `<button onclick="toggleReady()" style="background:${amReady ? '#e74c3c' : '#2ecc71'};color:white;font-size:18px;padding:12px 30px;border-radius:8px;border:none;cursor:pointer;font-weight:bold;margin-top:12px;">${amReady ? '❌ Not Ready' : '✅ Ready'}</button>`;
+
+        const barWidth = totalPlayers > 0 ? Math.round((readyCount / totalPlayers) * 100) : 0;
+        const progressBar = `<div style="background:#444;border-radius:10px;height:12px;width:80%;margin:10px auto;overflow:hidden;">
+            <div style="background:#2ecc71;height:100%;width:${barWidth}%;border-radius:10px;transition:width 0.3s;"></div>
+        </div>`;
+
+        status.innerHTML = `
+            <div style="text-align:center;">${instructBtn}${rolesBtn}</div>
+            <div style="text-align:center;margin-top:14px;font-size:18px;font-weight:bold;">
+                ${readyCount} / ${totalPlayers} Players Ready
+            </div>
+            ${progressBar}
+            <div style="text-align:center;margin-top:6px;">${readyBtn}</div>
+            <p style="text-align:center;color:#7f8c8d;margin:8px 0 0 0;font-size:13px;">Host can start once everyone is ready!</p>
+        `;
     }
 
     // ===== DAY =====
@@ -545,36 +590,145 @@ function updateUI(game) {
         if (lastSpokenPhase !== "night") { lastSpokenPhase = "night"; playNightAmbiance(); }
         document.getElementById("chatBox").style.display = "none";
 
-        // Cache the role at first night render so subsequent DB updates (e.g. robberies)
-        // don't change what actions the player sees — victims shouldn't know they were robbed
+        // Clear any old timer interval
+        if (nightTimerInterval) {
+            clearInterval(nightTimerInterval);
+            nightTimerInterval = null;
+        }
+
+        const subPhase = game.nightSubPhase;
+        // Cache the role at the start of night — prevents a robbed victim from seeing
+        // the Robber UI (their currentRole changes in DB but they should not know it)
         if (!cachedNightRole) {
             cachedNightRole = game.players?.[myName]?.currentRole || "Unassigned";
         }
-        const nightRole = cachedNightRole;
+        const nightIdentity = cachedNightRole;
+        const haveActed = game.nightDone && game.nightDone[myName];
 
-        const hasDone = game.readyPlayers && game.readyPlayers[myName];
-        let sHtml = `<div><strong>🌃 Night Phase</strong></div>`;
-        status.innerHTML = sHtml;
-        if (hasDone) { actions.innerHTML = "<em>Waiting for other players...</em>"; }
+        // ===== HOST: Manage sequential sub-phase progression =====
+        if (isHost) {
+            const allPlayersList = Object.keys(game.players || {});
+            const subInfo = NIGHT_ORDER.find(n => n.phase === subPhase);
+            const actingRoles = subInfo ? subInfo.roles : [];
+            const actingPlayers = allPlayersList.filter(p => actingRoles.includes(game.players?.[p]?.originalRole));
+            const doneActing = actingPlayers.filter(p => game.nightDone && game.nightDone[p]);
+            const deadline = game.nightSubPhaseDeadline || 0;
 
-        else {
+            const allDone = actingPlayers.length > 0 && actingPlayers.every(p => doneActing.includes(p));
+            const noActors = actingPlayers.length === 0;
+            const expired = Date.now() > deadline;
+
+            if (allDone || noActors || expired) {
+                const updates = {};
+
+                // Auto-complete any stragglers in this sub-phase
+                actingPlayers.forEach(p => {
+                    if (!(game.nightDone && game.nightDone[p])) {
+                        updates[`games/${currentGameCode}/nightDone/${p}`] = true;
+                    }
+                });
+
+                // Find the next phase that actually has players with that role — skip empty ones
+                let currentIdx = NIGHT_ORDER.findIndex(n => n.phase === subPhase);
+                let foundNext = false;
+
+                while (currentIdx < NIGHT_ORDER.length - 1) {
+                    currentIdx++;
+                    const candidate = NIGHT_ORDER[currentIdx];
+                    const candidateActors = allPlayersList.filter(p =>
+                        candidate.roles.includes(game.players?.[p]?.originalRole)
+                    );
+                    if (candidateActors.length > 0) {
+                        updates[`games/${currentGameCode}/nightSubPhase`] = candidate.phase;
+                        updates[`games/${currentGameCode}/nightSubPhaseDeadline`] = Date.now() + candidate.time * 1000;
+                        foundNext = true;
+                        break;
+                    }
+                }
+
+                if (!foundNext) {
+                    // No more actors in any remaining phase — advance to day
+                    allPlayersList.forEach(p => {
+                        if (!(game.nightDone && game.nightDone[p])) {
+                            updates[`games/${currentGameCode}/nightDone/${p}`] = true;
+                        }
+                    });
+                    updates[`games/${currentGameCode}/phase`] = "day";
+                    updates[`games/${currentGameCode}/nightSubPhase`] = null;
+                    updates[`games/${currentGameCode}/nightSubPhaseDeadline`] = null;
+                    updates[`games/${currentGameCode}/readyPlayers`] = null;
+                }
+                db.ref().update(updates).then(() => {
+                    // Re-read fresh state from Firebase after write completes
+                    db.ref(`games/${currentGameCode}`).once('value', snap => {
+                        if (snap.val()) updateUI(snap.val());
+                    });
+                });
+                status.innerHTML = `<div><strong>🌃 Night Phase</strong></div><p style="text-align:center;">Advancing...</p>`;
+                actions.innerHTML = "";
+                return;
+            }
+        }
+
+        // ===== CLIENT DISPLAY =====
+        if (!subPhase) {
+            status.innerHTML = `<div><strong>🌃 Night Phase</strong></div><p>Getting ready...</p>`;
+            actions.innerHTML = "";
+            return;
+        }
+
+        const subInfo = NIGHT_ORDER.find(n => n.phase === subPhase);
+        const isMyTurn = subInfo && subInfo.roles.includes(nightIdentity);
+        const deadline = game.nightSubPhaseDeadline || Date.now();
+        const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+
+        // Only the acting player sees the timer and sub-phase label
+        const timerColor = remaining <= 5 ? '#e74c3c' : (remaining <= 10 ? '#f39c12' : '#f1c40f');
+        const timerHtml = `<div id="nightTimer" style="text-align:center;font-size:36px;font-weight:bold;color:${timerColor};margin:4px 0;">⏱️ ${remaining}s</div>`;
+        const phaseLabel = subInfo ? subInfo.roles.join("/") : "???";
+
+        if (isMyTurn && !haveActed) {
+            let sHtml = `<div><strong>🌃 Night Phase</strong></div>${timerHtml}`;
+            sHtml += `<div style="text-align:center;font-size:14px;color:#bdc3c7;margin-bottom:6px;">👁️ <strong>${phaseLabel}</strong> phase</div>`;
+            status.innerHTML = sHtml + `<div style="text-align:center;font-size:15px;margin-bottom:4px;">🎭 Your turn as ${nightIdentity}</div>`;
+            actions.innerHTML = "";
+
+            // Start local countdown timer — auto-completes when it hits 0
+            const deadlineMs = deadline;
+            nightTimerInterval = setInterval(() => {
+                const timerEl = document.getElementById("nightTimer");
+                if (!timerEl) return;
+                const secs = Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000));
+                timerEl.textContent = `⏱️ ${secs}s`;
+                timerEl.style.color = secs <= 5 ? '#e74c3c' : (secs <= 10 ? '#f39c12' : '#f1c40f');
+                if (secs <= 0) {
+                    clearInterval(nightTimerInterval);
+                    nightTimerInterval = null;
+                    if (!haveActed) {
+                        completeNightAction();
+                    }
+                }
+            }, 500);
+
             const addBtn = (text, cls, cb) => { let b = document.createElement("button"); b.innerText = text; b.className = cls; b.onclick = cb; actions.appendChild(b); return b; };
             const p = game.players || {};
             const allPlayers = Object.keys(p);
 
-            if (nightRole === "Villager" || nightRole === "Tanner") {
-                if (nightRole === "Tanner") status.innerHTML += "<p>🧑‍🌾 Your goal: be voted out during the day!</p>";
+            if (nightIdentity === "Villager" || nightIdentity === "Tanner") {
+                if (nightIdentity === "Tanner") status.innerHTML += "<p>🧑‍🌾 Your goal: be voted out during the day!</p>";
                 addBtn("😴 Sleep", "night-btn swipe-btn", () => { playClick(); completeNightAction(); });
             }
-            else if (nightRole === "Werewolf") {
-                let allies = allPlayers.filter(x => x !== myName && p[x]?.currentRole === "Werewolf");
-                status.innerHTML += allies.length
+            else if (nightIdentity === "Werewolf") {
+                let allies = allPlayers.filter(x => x !== myName && p[x]?.originalRole === "Werewolf");
+                sHtml = status.innerHTML;
+                status.innerHTML = sHtml + (allies.length
                     ? `<p>🐺 Fellow Wolves: <strong>${allies.map(a => ""+a).join(", ")}</strong></p>`
-                    : "<p>🐺 You are a lone wolf.</p>";
+                    : "<p>🐺 You are a lone wolf.</p>");
                 addBtn("🐺 Acknowledge", "night-btn swipe-btn", () => { playClick(); completeNightAction(); });
             }
-            else if (nightRole === "Seer") {
-                status.innerHTML += "<p>🔮 Inspect a player or 2 center cards:</p>";
+            else if (nightIdentity === "Seer") {
+                let seerHtml = status.innerHTML + "<p>🔮 Inspect a player <em>or</em> 2 center cards:</p>";
+                status.innerHTML = seerHtml;
                 allPlayers.forEach(n => {
                     if (n !== myName) addBtn(`🔍 ${n}`, "swipe-btn", () => {
                         playCardFlipSound();
@@ -590,7 +744,7 @@ function updateUI(game) {
                     });
                 });
             }
-            else if (nightRole === "Robber") {
+            else if (nightIdentity === "Robber") {
                 status.innerHTML += "<p>🕵️ Rob a player:</p>";
                 allPlayers.forEach(n => {
                     if (n !== myName) addBtn(`💰 ${n}`, "swipe-btn", () => {
@@ -600,8 +754,8 @@ function updateUI(game) {
                     });
                 });
             }
-            else if (nightRole === "Troublemaker") {
-                status.innerHTML += "<p>⚡ Swap 2 players' cards:</p>";
+            else if (nightIdentity === "Troublemaker") {
+                status.innerHTML += "<p>⚡ Swap 2 other players' cards:</p>";
                 allPlayers.forEach(n => {
                     if (n !== myName) addBtn((tmFirstSelection===n?"✅ ":"")+" "+n, "swipe-btn", () => {
                         if (!tmFirstSelection) { tmFirstSelection = n; playClick(); updateUI(game); }
@@ -613,7 +767,7 @@ function updateUI(game) {
                     });
                 });
             }
-            else if (nightRole === "Insomniac") {
+            else if (nightIdentity === "Insomniac") {
                 status.innerHTML += "<p>🌙 Check your final card:</p>";
                 addBtn("👁️ Peek", "night-btn swipe-btn", () => {
                     const finalRole = game.players[myName].currentRole;
@@ -626,10 +780,14 @@ function updateUI(game) {
             const hint = document.createElement("div");
             hint.className = "swipe-hint"; hint.innerText = "👆 Tap to choose";
             actions.appendChild(hint);
-        }
-
-        if (isHost && game.readyPlayers && Object.keys(game.readyPlayers).length === Object.keys(game.players || {}).length) {
-            db.ref(`games/${currentGameCode}`).update({ phase: "day", readyPlayers: null });
+        } else {
+            // Not my turn, or already acted — no timer shown to other players
+            if (haveActed) {
+                status.innerHTML = `<div><strong>🌃 Night Phase</strong></div><p style="text-align:center;">✅ Done! Waiting for others...</p>`;
+            } else {
+                status.innerHTML = `<div><strong>🌃 Night Phase</strong></div><p style="text-align:center;">⏳ Waiting for other players...</p>`;
+            }
+            actions.innerHTML = "";
         }
     }
 }
@@ -654,7 +812,7 @@ function revealVotes() {
 }
 
 // ===== COMPLETE NIGHT ACTION =====
-function completeNightAction() { db.ref(`games/${currentGameCode}/readyPlayers/${myName}`).set(true); playClick(); }
+function completeNightAction() { db.ref(`games/${currentGameCode}/nightDone/${myName}`).set(true); playClick(); }
 
 // ===== CLEANUP =====
 function cleanupGame() {
@@ -682,6 +840,7 @@ function rematch() {
         Object.keys(players).forEach(p => {
             updates[`games/${currentGameCode}/players/${p}/originalRole`] = "Unassigned";
             updates[`games/${currentGameCode}/players/${p}/currentRole`] = "Unassigned";
+            updates[`games/${currentGameCode}/players/${p}/ready`] = false;
         });
         updates[`games/${currentGameCode}/phase`] = "lobby";
         updates[`games/${currentGameCode}/votes`] = null;
@@ -698,6 +857,13 @@ function rematch() {
     });
 }
 
+// ===== TOGGLE READY =====
+function toggleReady() {
+    if (!currentGameCode) return;
+    const ref = db.ref(`games/${currentGameCode}/players/${myName}/ready`);
+    ref.transaction(current => !current);
+}
+
 // ===== START GAME =====
 function startGame() {
     if (!isHost || gameStarting) return;
@@ -705,13 +871,26 @@ function startGame() {
     var startBtn = document.getElementById("startButton");
     if (startBtn) { startBtn.disabled = true; startBtn.style.opacity = "0.5"; }
 
-    // Check player count first before playing howl
+    // Check player count and readiness before playing howl
     db.ref(`games/${currentGameCode}/players`).once('value', snap => {
-        let players = Object.keys(snap.val());
+        const playerData = snap.val();
+        let players = Object.keys(playerData);
         if (players.length < 3) {
             gameStarting = false;
             if (startBtn) { startBtn.disabled = false; startBtn.style.opacity = "1"; }
             return alert("Need at least 3 players!");
+        }
+        if (players.length > 20) {
+            gameStarting = false;
+            if (startBtn) { startBtn.disabled = false; startBtn.style.opacity = "1"; }
+            return alert("Maximum 20 players allowed!");
+        }
+        // Check all players are ready
+        const allReady = players.every(p => playerData[p]?.ready === true);
+        if (!allReady) {
+            gameStarting = false;
+            if (startBtn) { startBtn.disabled = false; startBtn.style.opacity = "1"; }
+            return alert("Not all players are ready yet! Waiting for everyone to hit ✅ Ready.");
         }
 
         playClick();
@@ -720,43 +899,56 @@ function startGame() {
             const howl = new Audio('music/Wolf_howl.mp3');
             howl.volume = 0.9;
             howl.play().catch(() => {});
-            howl.onended = () => proceedStartGame(players);
-            setTimeout(() => proceedStartGame(players), 2000);
+            howl.onended = () => proceedStartGame();
+            setTimeout(() => proceedStartGame(), 2000);
         } catch(e) {
-            proceedStartGame(players);
+            proceedStartGame();
         }
     });
 }
 
-function proceedStartGame(players) {
+function proceedStartGame() {
     if (gameStarted) return;
-    gameStarted = true;
-    gameStarting = false;
-    if (players.length < 3) return;
-    let baseDeck = [
-        "Werewolf","Werewolf",
-        "Seer","Robber","Troublemaker",
-        "Villager",
-        "Tanner","Insomniac",
-        "Villager","Villager","Villager","Villager","Villager",
-        "Villager","Villager","Villager"
-    ];
-    let deck = baseDeck.slice(0, players.length + 3);
-    deck.sort(() => Math.random() - 0.5);
-    tmFirstSelection = ""; seerFirstCenterSelection = "";
-    let updates = {};
-    updates[`games/${currentGameCode}/phase`] = "night";
-    updates[`games/${currentGameCode}/votes`] = null;
-    updates[`games/${currentGameCode}/readyPlayers`] = null;
-    updates[`games/${currentGameCode}/nightLog`] = null;
-    players.forEach((p, i) => {
-        updates[`games/${currentGameCode}/players/${p}/originalRole`] = deck[i];
-        updates[`games/${currentGameCode}/players/${p}/currentRole`] = deck[i];
+
+    // Read players fresh from Firebase — avoids stale data if someone joined during the howl delay
+    db.ref(`games/${currentGameCode}/players`).once('value', snap => {
+        let players = Object.keys(snap.val());
+        if (players.length < 3) return;
+        if (players.length > 20) return;
+
+        gameStarted = true;
+        gameStarting = false;
+
+        // Build a deck large enough for up to 20 players (20 players + 3 center = 23 cards)
+        let baseDeck = [
+            "Werewolf","Werewolf",
+            "Seer","Robber","Troublemaker",
+            "Tanner","Insomniac",
+            "Villager","Villager","Villager","Villager","Villager",
+            "Villager","Villager","Villager","Villager","Villager",
+            "Villager","Villager","Villager","Villager","Villager",
+            "Villager","Villager"
+        ];
+        let deck = baseDeck.slice(0, players.length + 3);
+        deck.sort(() => Math.random() - 0.5);
+        tmFirstSelection = ""; seerFirstCenterSelection = "";
+        let updates = {};
+        updates[`games/${currentGameCode}/phase`] = "night";
+        updates[`games/${currentGameCode}/votes`] = null;
+        updates[`games/${currentGameCode}/readyPlayers`] = null;
+        updates[`games/${currentGameCode}/nightLog`] = null;
+        updates[`games/${currentGameCode}/nightDone`] = null;
+        updates[`games/${currentGameCode}/nightSubPhase`] = "werewolf";
+        updates[`games/${currentGameCode}/nightSubPhaseDeadline`] = Date.now() + 30000;
+        players.forEach((p, i) => {
+            updates[`games/${currentGameCode}/players/${p}/originalRole`] = deck[i];
+            updates[`games/${currentGameCode}/players/${p}/currentRole`] = deck[i];
+        });
+        updates[`games/${currentGameCode}/centerCards/c1`] = deck[players.length];
+        updates[`games/${currentGameCode}/centerCards/c2`] = deck[players.length + 1];
+        updates[`games/${currentGameCode}/centerCards/c3`] = deck[players.length + 2];
+        db.ref().update(updates);
     });
-    updates[`games/${currentGameCode}/centerCards/c1`] = deck[players.length];
-    updates[`games/${currentGameCode}/centerCards/c2`] = deck[players.length + 1];
-    updates[`games/${currentGameCode}/centerCards/c3`] = deck[players.length + 2];
-    db.ref().update(updates);
 }
 
 // ===== BACKGROUND MUSIC (MP3 File) =====
@@ -833,7 +1025,7 @@ async function tryReconnect() {
     if (!game.players || !game.players[savedName]) {
         isHost = savedHost === "true";
         // Re-add the player with default data
-        const playerData = { alive: true, originalRole: "Unassigned", currentRole: "Unassigned" };
+        const playerData = { alive: true, originalRole: "Unassigned", currentRole: "Unassigned", ready: false };
         await db.ref(`games/${savedCode}/players/${savedName}`).set(playerData);
         // If the original host disconnected, restore them as host
         if (isHost && game.host !== savedName) {
