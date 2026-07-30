@@ -923,8 +923,9 @@ function proceedStartGame() {
         let baseDeck = [
             "Werewolf","Werewolf",
             "Seer","Robber","Troublemaker",
+            "Villager",
             "Tanner","Insomniac",
-            "Villager","Villager","Villager","Villager","Villager",
+            "Villager","Villager","Villager","Villager",
             "Villager","Villager","Villager","Villager","Villager",
             "Villager","Villager","Villager","Villager","Villager",
             "Villager","Villager"
